@@ -1,7 +1,6 @@
 """ vision transfomers models"""
 import logging
 import math
-from copy import deepcopy
 from typing import Optional
 
 import torch
@@ -10,10 +9,10 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.models.helpers import build_model_with_cfg, overlay_external_default_cfg
+from timm.models.helpers import build_model_with_cfg
 from timm.models.layers import Mlp, DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
-from timm.models.vision_transformer import checkpoint_filter_fn, _init_vit_weights
+from timm.models.vision_transformer import checkpoint_filter_fn, init_weights_vit_jax, init_weights_vit_timm
 
 _logger = logging.getLogger(__name__)
 
@@ -482,9 +481,9 @@ class Vision_Transformer(nn.Module):
         head_bias = -math.log(self.num_classes) if 'nlhb' in weight_init else 0.
         if weight_init.startswith('jax'):
             for n, m in self.named_modules():
-                _init_vit_weights(m, n, head_bias=head_bias, jax_impl=True)
+                init_weights_vit_jax(m, n, head_bias=head_bias)
         else:
-            self.apply(_init_vit_weights)
+            self.apply(init_weights_vit_timm)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -521,22 +520,11 @@ class Vision_Transformer(nn.Module):
 
 
 def _create_transformers(variant, pretrained=False, default_cfg=None, **kwargs):
-    if default_cfg is None:
-        default_cfg = deepcopy(default_cfgs[variant])
-    overlay_external_default_cfg(default_cfg, kwargs)
-    default_num_classes = default_cfg['num_classes']
-    default_img_size = default_cfg['input_size'][-2:]
-
-    num_classes = kwargs.pop('num_classes', default_num_classes)
-    img_size = kwargs.pop('img_size', default_img_size)
     if kwargs.get('features_only', None):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     model = build_model_with_cfg(
         Vision_Transformer, variant, pretrained,
-        default_cfg=default_cfg,
-        img_size=img_size,
-        num_classes=num_classes,
         pretrained_filter_fn=checkpoint_filter_fn,
         **kwargs)
 
