@@ -2,7 +2,7 @@
 name = "MolNexTR"
 version = "0.0.1"
 description = "This is package for the MolNexTR model for optical chemical structure recognition based on Transformer and ConvNext dual-stream architecture"
-authors = ["Insilico Medicine"]
+authors = ["Chen, Yufan and Leung, Ching Ting and Huang, Yong and Sun, Jianwei and Chen, Hao and Gao, Hanyu"]
 packages = [
     { include = "MolNexTR" }
 ]
@@ -17,8 +17,8 @@ python = ">=3.10.0,<3.11"
 pytorch-lightning = ">=1.9.0"
 rdkit-pypi = ">=2022.9.5"
 pyonmttok = ">=1.37.1"
-timm = ">=0.4.12"
-albumentations = ">=1.1.0"
+timm = ">=0.9.16"
+albumentations = ">=1.4.24"
 transformers = "4.51.3"  # https://github.com/huggingface/transformers/issues?q=get_default_device
 smilespe = ">=0.0.3"
 
