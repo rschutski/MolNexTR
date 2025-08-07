@@ -1,7 +1,6 @@
 """ vision transfomers models"""
 import logging
 import math
-from copy import deepcopy
 from typing import Optional
 
 import torch
@@ -10,10 +9,10 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.models.helpers import build_model_with_cfg, overlay_external_default_cfg
+from timm.models.helpers import build_model_with_cfg
 from timm.models.layers import Mlp, DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
-from timm.models.vision_transformer import checkpoint_filter_fn, _init_vit_weights
+from timm.models.vision_transformer import checkpoint_filter_fn, init_weights_vit_jax, init_weights_vit_timm
 
 _logger = logging.getLogger(__name__)
 
@@ -126,7 +125,7 @@ class WindowAttention(nn.Module):
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
@@ -374,7 +373,7 @@ class BasicLayer(nn.Module):
     def forward(self, x, H, W, hiddens):
         for blk in self.blocks:
             if not torch.jit.is_scripting() and self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x, H, W)
+                x = checkpoint.checkpoint(blk, x, H, W, use_reentrant=False)
             else:
                 x = blk(x, H, W)
         hiddens.append(x)
@@ -482,9 +481,9 @@ class Vision_Transformer(nn.Module):
         head_bias = -math.log(self.num_classes) if 'nlhb' in weight_init else 0.
         if weight_init.startswith('jax'):
             for n, m in self.named_modules():
-                _init_vit_weights(m, n, head_bias=head_bias, jax_impl=True)
+                init_weights_vit_jax(m, n, head_bias=head_bias)
         else:
-            self.apply(_init_vit_weights)
+            self.apply(init_weights_vit_timm)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -521,22 +520,11 @@ class Vision_Transformer(nn.Module):
 
 
 def _create_transformers(variant, pretrained=False, default_cfg=None, **kwargs):
-    if default_cfg is None:
-        default_cfg = deepcopy(default_cfgs[variant])
-    overlay_external_default_cfg(default_cfg, kwargs)
-    default_num_classes = default_cfg['num_classes']
-    default_img_size = default_cfg['input_size'][-2:]
-
-    num_classes = kwargs.pop('num_classes', default_num_classes)
-    img_size = kwargs.pop('img_size', default_img_size)
     if kwargs.get('features_only', None):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     model = build_model_with_cfg(
         Vision_Transformer, variant, pretrained,
-        default_cfg=default_cfg,
-        img_size=img_size,
-        num_classes=num_classes,
         pretrained_filter_fn=checkpoint_filter_fn,
         **kwargs)
 
@@ -545,7 +533,7 @@ def _create_transformers(variant, pretrained=False, default_cfg=None, **kwargs):
 
 
 @register_model
-def swin_base(pretrained=False, **kwargs):
+def molnextr_swin_base(pretrained=False, **kwargs):
     model_kwargs = dict(
         patch_size=4, window_size=12, embed_dim=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), **kwargs)
     return _create_transformers('swin_base_patch4_window12_384', pretrained=pretrained, **model_kwargs)

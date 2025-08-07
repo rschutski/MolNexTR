@@ -5,12 +5,18 @@ import numpy as np
 import multiprocessing
 import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdFMCS
+from rdkit.Chem import rdDepictor
 rdkit.RDLogger.DisableLog('rdApp.*')
 from SmilesPE.pretokenizer import atomwise_tokenizer
 from .abbrs import RGROUP_SYMBOLS, ABBREVIATIONS, VALENCES, FORMULA_REGEX,SUBSTITUTIONS
 import difflib
 import re
+import itertools
+import logging
 
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 def get_smiles_stereo_list(smiles):
@@ -26,7 +32,7 @@ def get_smiles_stereo_list(smiles):
 def flip_stereo_in_smiles(smiles, flip_indices):
     pat = re.compile(r'\[C@[\w\d]*\]|\[C@@[\w\d]*\]')
     matches = list(pat.finditer(smiles))
-    assert len(matches) >= max(flip_indices, default=-1) + 1, "索引越界"
+    assert len(matches) >= max(flip_indices, default=-1) + 1, "Index out of bounds"
     smiles_new = smiles
     offset = 0
     for idx in flip_indices:
@@ -61,10 +67,10 @@ def align_chirality(smiles1, smiles2):
         match1 = mol1.GetSubstructMatch(mcs_mol)
         match2 = mol2.GetSubstructMatch(mcs_mol)
         if not match1 or not match2:
-            print("MCS映射失败，输出原始smiles2")
+            logger.warning("MCS mapping failed, output original smiles2")
             return smiles2
-        #print(f"mol1 MCS atoms: {match1}")
-        #print(f"mol2 MCS atoms: {match2}")
+        #logger.debug(f"mol1 MCS atoms: {match1}")
+        #logger.debug(f"mol2 MCS atoms: {match2}")
 
         # 2. 2D coords for spatial arrangement comparison
         rdDepictor.Compute2DCoords(mol1)
@@ -73,35 +79,35 @@ def align_chirality(smiles1, smiles2):
         coords2 = [mol2.GetConformer().GetAtomPosition(i) for i in match2]
         sign1 = chirality_sign(coords1)
         sign2 = chirality_sign(coords2)
-        #print(f"mol1骨架排列: {sign1}，mol2骨架排列: {sign2}")
+        #logger.debug(f"mol1 skeleton arrangement: {sign1}, mol2 skeleton arrangement: {sign2}")
         is_mirror = (sign1 != sign2)
 
         # 3. Find chiral centers
         chiral1 = list(Chem.FindMolChiralCenters(mol1, includeUnassigned=False, includeCIP=True))
         chiral2 = list(Chem.FindMolChiralCenters(mol2, includeUnassigned=False, includeCIP=True))
-        #print(f"mol1 chiral centers: {chiral1}")
-        #print(f"mol2 chiral centers: {chiral2}")
+        #logger.debug(f"mol1 chiral centers: {chiral1}")
+        #logger.debug(f"mol2 chiral centers: {chiral2}")
 
         if len(chiral1) == 0:
-            # 没有绝对手性，按SMILES手性符号逐一对齐
+            # No absolute chirality, align SMILES chirality symbols one by one
             stereo1 = get_smiles_stereo_list(smiles1)
             stereo2 = get_smiles_stereo_list(smiles2)
-            #print("smiles1手性符号顺序:", stereo1)
-            #print("smiles2手性符号顺序:", stereo2)
+                    #logger.debug(f"smiles1 chirality symbol order: {stereo1}")
+        #logger.debug(f"smiles2 chirality symbol order: {stereo2}")
             flip_indices = []
             for i, (s1, s2) in enumerate(zip(stereo1, stereo2)):
                 target = s1 if not is_mirror else ('@@' if s1 == '@' else '@')
                 if s2 != target:
                     flip_indices.append(i)
-            #print("需要flip的手性符号索引:", flip_indices)
+            #logger.debug(f"Chirality symbol indices that need to be flipped: {flip_indices}")
             output_smiles2 = flip_stereo_in_smiles(smiles2, flip_indices)
-            #print("对齐后smiles2:", output_smiles2)
+            #logger.debug(f"Aligned smiles2: {output_smiles2}")
             return output_smiles2
         if len(chiral1) != 0 and len(chiral2) != len(chiral1):
-            #print("mol1,2有多个手性中心单没对齐，直接输出原始smiles2")
+            #logger.warning("mol1,2 have multiple chiral centers but are not aligned, directly output original smiles2")
             return smiles2
 
-        # 正常对齐手性（绝对R/S对齐）
+        # Normal chirality alignment (absolute R/S alignment)
         mol2_edit = Chem.RWMol(mol2)
         chiral1_dict = dict(chiral1)
         chiral2_dict = dict(chiral2)
@@ -112,7 +118,7 @@ def align_chirality(smiles1, smiles2):
                 if is_mirror:
                     ref_chirality = {'R':'S','S':'R'}.get(ref_chirality, ref_chirality)
                 rs2 = chiral2_dict.get(idx2, None)
-                #print(f"mol1原子{idx1}({ref_chirality}) <-> mol2原子{idx2}({rs2})")
+                #logger.debug(f"mol1 atom {idx1}({ref_chirality}) <-> mol2 atom {idx2}({rs2})")
                 if rs2 is None:
                     pass
                 elif ref_chirality == rs2:
@@ -128,11 +134,11 @@ def align_chirality(smiles1, smiles2):
         mol2_new = mol2_edit.GetMol()
         Chem.SanitizeMol(mol2_new)
         smiles2_new = Chem.MolToSmiles(mol2_new, isomericSmiles=True)
-        #print("手性对齐后的smiles2:", smiles2_new)
+        #logger.debug(f"Chirality aligned smiles2: {smiles2_new}")
         return smiles2_new
 
     except Exception as e:
-        print(f"发生异常，输出原始smiles2: {e}")
+        logger.error(f"An exception occurred, output original smiles2: {e}")
         return smiles2
     
 
@@ -150,7 +156,7 @@ def is_valid_mol(s, format_='atomtok'):
             s = f"InChI=1S/{s}"
         mol = Chem.MolFromInchi(s)
     else:
-        raise NotImplemented
+        raise NotImplementedError
     return mol is not None
 
 
@@ -217,7 +223,7 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         mol_tmp = mol.GetMol()
         
         Chem.SanitizeMol(mol_tmp)
-        #print(f"n: {n}", f"mol_tmp: {mol_tmp}")
+        #logger.debug(f"n: {n}", f"mol_tmp: {mol_tmp}")
 
         # chiral_centers = Chem.FindMolChiralCenters(
         #     mol_tmp, includeUnassigned=True, includeCIP=False, useLegacyImplementation=False)
@@ -225,10 +231,10 @@ def _verify_chirality(mol, coords, symbols, edges, debug=False):
         # print(f"chiral_center_ids: {chiral_center_ids}")  # List[Tuple[int, any]] -> List[int]
 
         # if not chiral_center_ids:
-        # # symbols 是一个原子符号列表（如 ['[F3C]', '[C@]', ...]）
+        # # symbols is a list of atom symbols (e.g. ['[F3C]', '[C@]', ...])
         chiral_tags = ['[C@]', '[C@@]', '[C@H]', '[C@@H]']
         chiral_center_ids = [i for i, sym in enumerate(symbols) if any(tag in sym for tag in chiral_tags)]
-        print(f"chiral_center_ids (from symbols): {chiral_center_ids}")
+        logger.debug(f"chiral_center_ids (from symbols): {chiral_center_ids}")
         
         # correction to clear pre-condition violation (for some corner cases)
         for bond in mol.GetBonds():
@@ -677,7 +683,7 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
 
     pred_smiles = '<invalid>'
     smiles = rdkit.Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-    #print(f"initial_SMILES: {smiles}")
+    #logger.debug(f"initial_SMILES: {smiles}")
     try:
         # TODO: move to an util function
         if image is not None:
@@ -687,20 +693,20 @@ def _convert_graph_to_smiles(coords, symbols, edges, image=None, debug=False):
         
         mol = _verify_chirality(mol, coords, symbols, edges, debug)
         smiles1 = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-        #print(f"after_chirality_SMILES: {smiles1}")
+        #logger.debug(f"after_chirality_SMILES: {smiles1}")
         # molblock is obtained before expanding func groups, otherwise the expanded group won't have coordinates.
         # TODO: make sure molblock has the abbreviation information
         pred_molblock = Chem.MolToMolBlock(mol)
         pred_smiles, mol = _expand_functional_group(mol, {}, debug)
-        #print(f"after_expansion_SMILES: {pred_smiles}")
+        #logger.debug(f"after_expansion_SMILES: {pred_smiles}")
         pred_smiles = align_chirality(smiles1, pred_smiles)
-        #print(f"final_SMILES: {pred_smiles}\n")
+        #logger.debug(f"final_SMILES: {pred_smiles}\n")
         mol = Chem.MolFromSmiles(pred_smiles)
         pred_molblock = Chem.MolToMolBlock(mol)
         success = True
     except Exception as e:
         if debug:
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
         pred_molblock = ''
         success = False
 
@@ -748,7 +754,7 @@ def _postprocess_smiles(smiles, coords=None, symbols=None, edges=None, molblock=
         success = True
     except Exception as e:
         if debug:
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
         pred_smiles = smiles
         pred_molblock = ''
         success = False
@@ -778,7 +784,7 @@ def _keep_main_molecule(smiles, debug=False):
             smiles = Chem.MolToSmiles(main_mol)
     except Exception as e:
         if debug:
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
     return smiles
 
 

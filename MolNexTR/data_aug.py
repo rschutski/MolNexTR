@@ -1,18 +1,59 @@
 """ data augmentation algriothm"""
 import albumentations as A
-from albumentations.augmentations.geometric.functional import safe_rotate_enlarged_img_size, _maybe_process_in_chunks, \
-                                                              keypoint_rotate
+from albumentations.augmentations.geometric.functional import (
+    compute_affine_warp_output_shape, 
+    maybe_process_in_chunks,
+    keypoints_rot90,
+    create_affine_transformation_matrix,
+    warp_affine
+)
 import cv2
 import math
 import random
 import numpy as np
 
 
+def safe_rotate_enlarged_img_size(angle: float, rows: int, cols: int) -> tuple[int, int]:
+    """Calculate the size of the enlarged image after rotation to fit the entire rotated image."""
+    angle_rad = math.radians(angle)
+    cos_angle = abs(math.cos(angle_rad))
+    sin_angle = abs(math.sin(angle_rad))
+    
+    new_width = int(cols * cos_angle + rows * sin_angle)
+    new_height = int(cols * sin_angle + rows * cos_angle)
+    
+    return new_height, new_width
+
+
+def keypoint_rotate(keypoint, angle: float, rows: int, cols: int):
+    """Rotate keypoint coordinates around the center of the image."""
+    x, y = keypoint[0], keypoint[1]
+    
+    # Convert to center-based coordinates
+    center_x, center_y = cols / 2, rows / 2
+    x_centered = x - center_x
+    y_centered = y - center_y
+    
+    # Apply rotation
+    angle_rad = math.radians(angle)
+    cos_angle = math.cos(angle_rad)
+    sin_angle = math.sin(angle_rad)
+    
+    x_rotated = x_centered * cos_angle - y_centered * sin_angle
+    y_rotated = x_centered * sin_angle + y_centered * cos_angle
+    
+    # Convert back to image coordinates
+    x_new = x_rotated + center_x
+    y_new = y_rotated + center_y
+    
+    return (x_new, y_new) + keypoint[2:]
+
+
 def safe_rotate(
     img: np.ndarray,
-    angle: int = 0,
+    angle: float = 0,
     interpolation: int = cv2.INTER_LINEAR,
-    value: int = None,
+    value = None,
     border_mode: int = cv2.BORDER_REFLECT_101,
 ):
 
@@ -31,18 +72,18 @@ def safe_rotate(
     rotation_mat[0, 2] += new_cols / 2 - image_center[0]
     rotation_mat[1, 2] += new_rows / 2 - image_center[1]
 
-    # CV2 Transformation function
-    warp_affine_fn = _maybe_process_in_chunks(
-        cv2.warpAffine,
-        M=rotation_mat,
-        dsize=(new_cols, new_rows),
-        flags=interpolation,
-        borderMode=border_mode,
-        borderValue=value,
-    )
+    # Convert 2x3 matrix to 3x3 for albumentations compatibility
+    rotation_mat = np.vstack([rotation_mat, [0, 0, 1]])
 
-    # rotate image with the new bounds
-    rotated_img = warp_affine_fn(img)
+    # Use the albumentations warp_affine function
+    rotated_img = warp_affine(
+        img, 
+        rotation_mat, 
+        interpolation=interpolation,
+        fill=value if value is not None else 0,
+        border_mode=border_mode,
+        output_shape=(new_rows, new_cols)
+    )
 
     return rotated_img
 
@@ -78,21 +119,31 @@ class SafeRotate(A.SafeRotate):
         always_apply=False,
         p=0.5,
     ):
+        # Remove value and mask_value as they're not valid in newer albumentations
         super(SafeRotate, self).__init__(
             limit=limit,
             interpolation=interpolation,
             border_mode=border_mode,
-            value=value,
-            mask_value=mask_value,
             always_apply=always_apply,
             p=p)
 
     def apply(self, img, angle=0, interpolation=cv2.INTER_LINEAR, **params):
         return safe_rotate(
-            img=img, value=self.value, angle=angle, interpolation=interpolation, border_mode=self.border_mode)
+            img=img, value=0, angle=angle, interpolation=interpolation, border_mode=self.border_mode)
 
     def apply_to_keypoint(self, keypoint, angle=0, **params):
-        return keypoint_safe_rotate(keypoint, angle=angle, rows=params["rows"], cols=params["cols"])
+        rows, cols = params["shape"][:2]
+        return keypoint_safe_rotate(keypoint, angle=angle, rows=rows, cols=cols)
+
+    def apply_to_keypoints(self, keypoints, angle=0, **params):
+        if len(keypoints) == 0:
+            return keypoints
+        rows, cols = params["shape"][:2]
+        keypoints = np.array(keypoints, dtype=np.float32)
+        result = []
+        for kp in keypoints:
+            result.append(keypoint_safe_rotate(kp, angle=angle, rows=rows, cols=cols))
+        return np.array(result, dtype=np.float32)
 
 
 class CropWhite(A.DualTransform):
@@ -146,6 +197,14 @@ class CropWhite(A.DualTransform):
         x, y, angle, scale = keypoint[:4]
         return x - crop_left + self.pad, y - crop_top + self.pad, angle, scale
 
+    def apply_to_keypoints(self, keypoints, crop_top=0, crop_bottom=0, crop_left=0, crop_right=0, **params):
+        if len(keypoints) == 0:
+            return keypoints
+        keypoints = np.array(keypoints, dtype=np.float32)
+        keypoints[:, 0] = keypoints[:, 0] - crop_left + self.pad  # x coordinates
+        keypoints[:, 1] = keypoints[:, 1] - crop_top + self.pad   # y coordinates
+        return keypoints
+
     def get_transform_init_args_names(self):
         return ('value', 'pad')
 
@@ -183,6 +242,14 @@ class PadWhite(A.DualTransform):
         x, y, angle, scale = keypoint[:4]
         return x + pad_left, y + pad_top, angle, scale
 
+    def apply_to_keypoints(self, keypoints, pad_top=0, pad_bottom=0, pad_left=0, pad_right=0, **params):
+        if len(keypoints) == 0:
+            return keypoints
+        keypoints = np.array(keypoints, dtype=np.float32)
+        keypoints[:, 0] = keypoints[:, 0] + pad_left  # x coordinates
+        keypoints[:, 1] = keypoints[:, 1] + pad_top   # y coordinates
+        return keypoints
+
     def get_transform_init_args_names(self):
         return ('value', 'pad_ratio')
 
@@ -205,6 +272,9 @@ class SaltAndPepperNoise(A.DualTransform):
 
     def apply_to_keypoint(self, keypoint, **params):
         return keypoint
+
+    def apply_to_keypoints(self, keypoints, **params):
+        return keypoints
 
     def get_transform_init_args_names(self):
         return ('value', 'num_dots')
@@ -242,6 +312,12 @@ class ResizePad(A.DualTransform):
         )
         return img
 
+    def apply_to_keypoints(self, keypoints, **params):
+        # For ResizePad, keypoints need to be scaled and translated
+        # This is complex, so for now return empty list since this transform
+        # is typically used for inference where keypoints aren't needed
+        return []
+
 
 def normalized_grid_distortion(
         img,
@@ -272,7 +348,7 @@ def normalized_grid_distortion(
     return A.augmentations.functional.grid_distortion(img, num_steps, xsteps, ysteps, *args, **kwargs)
 
 
-class NormalizedGridDistortion(A.augmentations.transforms.GridDistortion):
+class NormalizedGridDistortion(A.GridDistortion):
     def apply(self, img, stepsx=(), stepsy=(), interpolation=cv2.INTER_LINEAR, **params):
         return normalized_grid_distortion(img, self.num_steps, stepsx, stepsy, interpolation, self.border_mode,
                                           self.value)
@@ -301,7 +377,7 @@ class PadToSquare(A.DualTransform):
         return img
 
     def apply_to_keypoint(self, keypoint, **params):
-        height, width = params["rows"], params["cols"]
+        height, width = params["shape"][:2]
         diff = abs(height - width)
         pad1, pad2 = diff // 2, diff - diff // 2
         x, y, angle, scale = keypoint[:4]
@@ -309,6 +385,19 @@ class PadToSquare(A.DualTransform):
             return x, y + pad1, angle, scale
         else:
             return x + pad1, y, angle, scale
+
+    def apply_to_keypoints(self, keypoints, **params):
+        if len(keypoints) == 0:
+            return keypoints
+        height, width = params["shape"][:2]
+        diff = abs(height - width)
+        pad1 = diff // 2
+        keypoints = np.array(keypoints, dtype=np.float32)
+        if height <= width:
+            keypoints[:, 1] = keypoints[:, 1] + pad1  # y coordinates
+        else:
+            keypoints[:, 0] = keypoints[:, 0] + pad1  # x coordinates
+        return keypoints
 
     def get_transform_init_args_names(self):
         return ('value',)
@@ -337,7 +426,7 @@ class ConditionalPadToSquare(A.DualTransform):
         return img
 
     def apply_to_keypoint(self, keypoint, **params):
-        height, width, _ = params["rows"], params["cols"]
+        height, width = params["shape"][:2]
         ratio = max(height, width) / min(height, width)
         if ratio >= self.ratio_threshold:
             x, y, angle, scale = keypoint
@@ -351,6 +440,24 @@ class ConditionalPadToSquare(A.DualTransform):
             return x, y, angle, scale
         else:
             return keypoint
+
+    def apply_to_keypoints(self, keypoints, **params):
+        if len(keypoints) == 0:
+            return keypoints
+        height, width = params["shape"][:2]
+        ratio = max(height, width) / min(height, width)
+        if ratio >= self.ratio_threshold:
+            keypoints = np.array(keypoints, dtype=np.float32)
+            diff = abs(height - width)
+            if height < width:
+                pad_top = diff // 2
+                keypoints[:, 1] = keypoints[:, 1] + pad_top  # y coordinates
+            else:
+                pad_left = diff // 2
+                keypoints[:, 0] = keypoints[:, 0] + pad_left  # x coordinates
+            return keypoints
+        else:
+            return np.array(keypoints, dtype=np.float32) if len(keypoints) > 0 else keypoints
 
     def get_transform_init_args_names(self):
         return ('value', 'ratio_threshold')

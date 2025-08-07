@@ -142,7 +142,7 @@ class Encoder(nn.Module):
         def layer_forward(layer, x, hiddens):
             for blk in layer.blocks:
                 if not torch.jit.is_scripting() and layer.use_checkpoint:
-                    x = torch.utils.checkpoint.checkpoint(blk, x)
+                    x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
                 else:
                     x = blk(x)
             H, W = layer.input_resolution
