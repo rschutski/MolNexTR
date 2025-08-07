@@ -43,7 +43,7 @@ def get_args():
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--backend', type=str, default='gloo', choices=['gloo', 'nccl'])
     # Model-specific options
-    parser.add_argument('--encoder', type=str, default='molnextr_swin_base')
+    parser.add_argument('--encoder', type=str, default='swin_base')
     parser.add_argument('--decoder', type=str, default='lstm')
     parser.add_argument('--no_pretrained', action='store_true')
     parser.add_argument('--use_checkpoint', action='store_true')
