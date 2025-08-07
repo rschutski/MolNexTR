@@ -3,3 +3,12 @@
 */.vscode
 */figure
 */requirements.txt
+
+# 
+**/.ipynb_checkpoints/
+*.log
+**/__pycache__
+**/checkpoints/
+**/.DS_Store
+poetry.lock
+*.pyc
