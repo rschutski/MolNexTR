@@ -533,7 +533,7 @@ def _create_transformers(variant, pretrained=False, default_cfg=None, **kwargs):
 
 
 @register_model
-def molnextr_swin_base(pretrained=False, **kwargs):
+def swin_base(pretrained=False, **kwargs):
     model_kwargs = dict(
         patch_size=4, window_size=12, embed_dim=128, depths=(2, 2, 18, 2), num_heads=(4, 8, 16, 32), **kwargs)
     return _create_transformers('swin_base_patch4_window12_384', pretrained=pretrained, **model_kwargs)
